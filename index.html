@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lyric Cards</title>
+<style>
+:root{--bg:#f4f5fa;--fg:#14161f;--muted:#5b6070;--panel:#fff;--line:#d5d8e4;--accent:#2f5fd0;--accent-fg:#fff;--card:#e8e8f0;--card-fg:#111;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f1220;--fg:#eceef8;--muted:#9aa0b8;--panel:#181c30;--line:#2b3050;--accent:#6c93ff;--accent-fg:#0b0e1c;--card:#e8e8f0;--card-fg:#111}}
+:root[data-theme="dark"]{--bg:#0f1220;--fg:#eceef8;--muted:#9aa0b8;--panel:#181c30;--line:#2b3050;--accent:#6c93ff;--accent-fg:#0b0e1c}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:640px;margin:0 auto;padding:20px 16px 40px}
+h1{font-size:1.4rem;margin:0 0 4px}
+p.sub{color:var(--muted);margin:0 0 18px;font-size:.95rem}
+label{display:block;font-weight:600;margin:16px 0 6px}
+input[type=file],textarea{width:100%;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:12px;font-size:1rem}
+textarea{min-height:200px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.95rem}
+.hint{color:var(--muted);font-size:.85rem;margin-top:4px}
+button{margin-top:20px;width:100%;padding:16px;font-size:1.1rem;font-weight:700;border:0;border-radius:12px;background:var(--accent);color:var(--accent-fg)}
+#stage{position:fixed;inset:0;background:var(--bg);overflow:hidden;display:none;z-index:10}
+.card{position:absolute;display:flex;align-items:center;justify-content:center;text-align:center;background:var(--card);color:var(--card-fg);font:700 clamp(1.1rem,4vw,1.7rem) Helvetica,Arial,sans-serif;padding:20px;border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.35);will-change:transform}
+#stop{position:fixed;top:calc(env(safe-area-inset-top,0px) + 10px);right:10px;z-index:20;display:none;width:auto;margin:0;padding:8px 14px;font-size:.9rem;background:#c0392b;color:#fff}
+button.alt{background:transparent;color:var(--fg);border:1px solid var(--line)}
+#rec{position:fixed;inset:0;background:var(--bg);display:none;flex-direction:column;align-items:center;justify-content:center;padding:20px;text-align:center;z-index:30}
+#rec-line{font-size:clamp(1.3rem,5vw,2rem);font-weight:700;margin:12px 0 4px;max-width:560px}
+#rec-count{color:var(--muted);margin-bottom:16px}
+#rec-tap{max-width:560px;padding:40px 16px;font-size:1.3rem}
+#rec button{max-width:560px}
+</style>
+</head>
+<body>
+<main id="setup">
+  <h1>Lyric Cards</h1>
+  <p class="sub">Pick a song, enter your lyrics with timestamps, and tap Start.</p>
+
+  <label for="song">Song file</label>
+  <input id="song" type="file" accept="audio/*,video/*">
+
+  <label for="lyrics">Lyrics (one per line: seconds | text)</label>
+  <textarea id="lyrics" spellcheck="false">0 | First line goes here
+2.5 | Second line
+4.6 | Third line
+8 | Fourth line
+10.5 | Fifth line
+13.5 | Sixth line
+16 | Seventh line
+20 | Last line</textarea>
+  <div class="hint">Replace these with your own lines. The number is when the line appears in the song.</div>
+
+  <label for="plain">Or: tap-to-time (paste lyrics only, one line each)</label>
+  <textarea id="plain" spellcheck="false" placeholder="Paste your lyrics here, no numbers"></textarea>
+  <div class="hint">Pick your song above, then tap Record timing. Tap each time a new line starts in the song. The timings fill in the box above.</div>
+  <button id="rec-start" class="alt">Record timing</button>
+
+  <button id="start">Start</button>
+</main>
+
+<div id="stage"></div>
+<div id="rec">
+  <div class="hint">Tap when this line starts in the song</div>
+  <div id="rec-line"></div>
+  <div id="rec-count"></div>
+  <button id="rec-tap">TAP</button>
+  <button id="rec-cancel" class="alt">Cancel</button>
+</div>
+<button id="stop">Stop</button>
+
+<script>
+(function(){
+  var SPEED = 120, GAP = 30;
+  var stage = document.getElementById('stage');
+  var stopBtn = document.getElementById('stop');
+  var audio = null, cards = [], lyrics = [], idx = 0, raf = 0, last = 0, url = null;
+
+  function parse(text){
+    return text.split('\n').map(function(l){
+      var i = l.indexOf('|');
+      if(i < 0) return null;
+      var t = parseFloat(l.slice(0, i));
+      var s = l.slice(i + 1).trim();
+      return isNaN(t) || !s ? null : {t: t, s: s};
+    }).filter(Boolean).sort(function(a, b){ return a.t - b.t; });
+  }
+
+  function size(){ return Math.min(300, Math.floor(window.innerWidth * 0.7)); }
+
+  function pickX(sz){
+    var W = window.innerWidth, H = window.innerHeight, maxX = Math.max(0, W - sz);
+    for(var n = 0; n < 30; n++){
+      var x = Math.random() * maxX, ok = true;
+      for(var i = 0; i < cards.length; i++){
+        var c = cards[i];
+        if(c.y + sz + GAP > H && Math.abs(c.x - x) < sz + GAP){ ok = false; break; }
+      }
+      if(ok) return x;
+    }
+    return Math.random() * maxX;
+  }
+
+  function spawn(text){
+    var sz = size(), el = document.createElement('div');
+    el.className = 'card';
+    el.style.width = el.style.height = sz + 'px';
+    el.textContent = text;
+    var c = {el: el, x: pickX(sz), y: window.innerHeight, sz: sz};
+    el.style.transform = 'translate(' + c.x + 'px,' + c.y + 'px)';
+    stage.appendChild(el);
+    cards.push(c);
+  }
+
+  function tick(now){
+    var dt = last ? (now - last) / 1000 : 0;
+    last = now;
+    var t = audio.currentTime;
+    while(idx < lyrics.length && t >= lyrics[idx].t){ spawn(lyrics[idx].s); idx++; }
+    for(var i = cards.length - 1; i >= 0; i--){
+      var c = cards[i];
+      c.y -= SPEED * dt;
+      if(c.y + c.sz < 0){ c.el.remove(); cards.splice(i, 1); continue; }
+      c.el.style.transform = 'translate(' + c.x + 'px,' + c.y + 'px)';
+    }
+    if(idx >= lyrics.length && cards.length === 0){ stop(); return; }
+    raf = requestAnimationFrame(tick);
+  }
+
+  function stop(){
+    cancelAnimationFrame(raf);
+    if(audio){ audio.pause(); audio = null; }
+    if(url){ URL.revokeObjectURL(url); url = null; }
+    stage.innerHTML = ''; cards = [];
+    stage.style.display = 'none'; stopBtn.style.display = 'none';
+    document.getElementById('setup').style.display = 'block';
+  }
+
+  document.getElementById('start').addEventListener('click', function(){
+    var f = document.getElementById('song').files[0];
+    if(!f){ alert('Pick a song file first.'); return; }
+    lyrics = parse(document.getElementById('lyrics').value);
+    if(!lyrics.length){ alert('Add at least one line like: 2.5 | Hello'); return; }
+    url = URL.createObjectURL(f);
+    audio = new Audio(url);
+    idx = 0; last = 0; cards = [];
+    document.getElementById('setup').style.display = 'none';
+    stage.style.display = 'block'; stopBtn.style.display = 'block';
+    audio.play().then(function(){ raf = requestAnimationFrame(tick); })
+      .catch(function(){ alert('Could not play that file.'); stop(); });
+  });
+  stopBtn.addEventListener('click', stop);
+
+  // ---- tap-to-time ----
+  var rec = document.getElementById('rec');
+  var recLine = document.getElementById('rec-line');
+  var recCount = document.getElementById('rec-count');
+  var recAudio = null, recLines = [], recTimes = [], recUrl = null;
+
+  function showRec(){
+    recLine.textContent = recLines[recTimes.length];
+    recCount.textContent = (recTimes.length + 1) + ' / ' + recLines.length;
+  }
+
+  function endRec(save){
+    if(recAudio){ recAudio.pause(); recAudio = null; }
+    if(recUrl){ URL.revokeObjectURL(recUrl); recUrl = null; }
+    if(save && recTimes.length){
+      document.getElementById('lyrics').value = recTimes.map(function(t, i){
+        return t.toFixed(1) + ' | ' + recLines[i];
+      }).join('\n');
+    }
+    rec.style.display = 'none';
+    document.getElementById('setup').style.display = 'block';
+    if(save) alert('Timing saved. Tap Start to play it.');
+  }
+
+  document.getElementById('rec-start').addEventListener('click', function(){
+    var f = document.getElementById('song').files[0];
+    if(!f){ alert('Pick a song file first.'); return; }
+    recLines = document.getElementById('plain').value.split('\n')
+      .map(function(s){ return s.trim(); }).filter(Boolean);
+    if(!recLines.length){ alert('Paste your lyrics in the tap-to-time box first.'); return; }
+    recTimes = [];
+    recUrl = URL.createObjectURL(f);
+    recAudio = new Audio(recUrl);
+    document.getElementById('setup').style.display = 'none';
+    rec.style.display = 'flex';
+    showRec();
+    recAudio.play().catch(function(){ alert('Could not play that file.'); endRec(false); });
+  });
+
+  document.getElementById('rec-tap').addEventListener('click', function(){
+    if(!recAudio) return;
+    recTimes.push(Math.max(0, recAudio.currentTime - 0.2));
+    if(recTimes.length >= recLines.length){ endRec(true); } else { showRec(); }
+  });
+  document.getElementById('rec-cancel').addEventListener('click', function(){ endRec(false); });
+})();
+</script>
+</body>
+</html>
